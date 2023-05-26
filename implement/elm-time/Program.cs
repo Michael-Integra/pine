@@ -279,7 +279,7 @@ public class Program
             var elmEngineOption = AddElmEngineOptionOnCommand(
                 runServerCommand,
                 defaultFromEnvironmentVariablePrefix: "web_server",
-                defaultEngineConsideringEnvironmentVariable: fromEnv => fromEnv ?? ElmInteractive.ElmEngineType.JavaScript_V8);
+                defaultEngineConsideringEnvironmentVariable: fromEnv => fromEnv ?? ElmInteractive.ElmEngineType.JavaScript_Jint);
 
             runServerCommand.OnExecute(() =>
             {
