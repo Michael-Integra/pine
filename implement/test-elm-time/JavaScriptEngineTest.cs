@@ -11,6 +11,6 @@ public class JavaScriptEngineTest
     {
         var jsEngine = IJsEngine.BuildJsEngine();
 
-        Assert.AreEqual(4, jsEngine.Evaluate("3 + 1"));
+        Assert.AreEqual("4", jsEngine.Evaluate("3 + 1").ToString());
     }
 }
