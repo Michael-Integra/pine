@@ -44,6 +44,12 @@ public class ClearScriptV8
 
     public static void EnsureNativeLibrariesAvailableForCurrentPlatform()
     {
+        
+        
+        throw new Exception("Simulate failure to setup dependencies");
+
+
+
         var setupForCurrentOs =
             DependenciesFilesByOs.FirstOrDefault(c => RuntimeInformation.IsOSPlatform(c.Key)).Value
             ??
