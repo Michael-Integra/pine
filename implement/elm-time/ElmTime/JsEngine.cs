@@ -11,7 +11,7 @@ public interface IJsEngine : IDisposable
     object CallFunction(string functionName, params object[] args);
 
     public static IJsEngine DefaultBuildJsEngine() =>
-        JsEngineFromJavaScriptEngineSwitcher.ConstructJsEngine();
+        JsEngineJintOptimizedForElmApps.Create();
 
     public static Func<IJsEngine>? OverrideDefaultBuildJsEngine { set; get; }
 
