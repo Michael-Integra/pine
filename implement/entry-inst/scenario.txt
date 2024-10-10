@@ -1,0 +1,5 @@
+dotnet  run   1>  test-inst.txt  2>&1
+
+dotnet  run  --configuration Release   1>  test-inst.txt  2>&1
+
+."bin\Release\net8.0\entry-inst.exe"  1>  test-inst.txt  2>&1

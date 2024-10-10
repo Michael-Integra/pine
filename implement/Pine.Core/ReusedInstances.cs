@@ -44,7 +44,7 @@ public record ReusedInstances(
         Instance.Build();
     }
 
-    static IEnumerable<Expression> ExpressionsSource()
+    public static IEnumerable<Expression> ExpressionsSource()
     {
         foreach (var namedExpression in PopularExpression.BuildPopularExpressionDictionary())
         {
@@ -52,8 +52,353 @@ public record ReusedInstances(
         }
     }
 
+
+    public record PrecompiledDictEntry(
+        string Key,
+        PrecompiledDictEntryValue Value);
+
+    public record PrecompiledDictEntryValue(
+        string? BlobBytesBase64,
+        IReadOnlyList<string>? ListItemsKeys);
+
+    const string subsetCompilerKey = "expected-in-compiler-container";
+
+    public static System.ReadOnlyMemory<byte> BuildPrecompiledDictFile(
+        PineListValueReusedInstances source)
+    {
+        var entriesList = BuildPrecompiledDictEntries(source);
+
+        return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(entriesList);
+    }
+
+    public static IReadOnlyList<PrecompiledDictEntry> BuildPrecompiledDictEntries(
+        PineListValueReusedInstances source)
+    {
+        var (_, allBlobs) =
+            CollectAllComponentsFromRoots(
+                [.. source.PineValueLists.Values
+                ,..source.ValuesExpectedInCompilerLists
+                ,..source.ValuesExpectedInCompilerBlobs]);
+
+        var mutatedBlobsDict = new Dictionary<PineValue.BlobValue, string>();
+
+        var blobEntriesList =
+            allBlobs
+            .OrderBy(blob => blob.Bytes.Length)
+            .Select((blobValue, blobIndex) =>
+            {
+                var entryKey = "blob-" + blobIndex.ToString();
+
+                mutatedBlobsDict[blobValue] = entryKey;
+
+                return
+                new PrecompiledDictEntry(
+                    Key: entryKey,
+                    new PrecompiledDictEntryValue(
+                        BlobBytesBase64: System.Convert.ToBase64String(blobValue.Bytes.Span),
+                        ListItemsKeys: null));
+            })
+            .ToList();
+
+        var listsOrdered =
+            source.PineValueLists.Values
+            .Concat(source.ValuesExpectedInCompilerLists)
+            .Distinct()
+            .OrderBy(l => l.NodesCount)
+            .ToList();
+
+        var mutatedListDict = new Dictionary<PineValue.ListValue, string>();
+
+        string itemId(PineValue itemValue)
+        {
+            if (itemValue is PineValue.BlobValue itemBlob)
+                return mutatedBlobsDict[itemBlob];
+
+            if (itemValue is PineValue.ListValue itemList)
+                return mutatedListDict[itemList];
+
+            throw new System.NotImplementedException(
+                "Unexpected item value type: " + itemValue.GetType());
+        }
+
+        PrecompiledDictEntryValue entryListFromItems(
+            IReadOnlyList<PineValue> itemValues)
+        {
+            var itemsIds = itemValues.Select(itemId).ToArray();
+
+            return new PrecompiledDictEntryValue(
+                BlobBytesBase64: null,
+                ListItemsKeys: itemsIds);
+        }
+
+        var listEntriesList =
+            listsOrdered
+            .Select((listInstance, index) =>
+            {
+                var entryKey = "list-" + index.ToString();
+
+                mutatedListDict[listInstance] = entryKey;
+
+                return
+                    new PrecompiledDictEntry(
+                        Key: entryKey,
+                        Value: entryListFromItems(listInstance.Elements));
+            })
+            .ToList();
+
+        var ventry =
+            new PrecompiledDictEntry(
+                Key: subsetCompilerKey,
+                Value: entryListFromItems(
+                    [.. source.ValuesExpectedInCompilerBlobs.Cast<PineValue>().Concat(source.ValuesExpectedInCompilerLists)]));
+
+        return
+            [..blobEntriesList
+            ,..listEntriesList
+            ,ventry];
+    }
+
+    public static PineListValueReusedInstances BuildFromPrecompiledJson(string json)
+    {
+        var parsed = System.Text.Json.JsonSerializer.Deserialize<IReadOnlyList<PrecompiledDictEntry>>(json);
+
+        return BuildFromPrecompiled(parsed);
+    }
+
+    public static PineListValueReusedInstances BuildFromPrecompiled(
+        IReadOnlyList<PrecompiledDictEntry> entries)
+    {
+        var mutatedDict = new Dictionary<string, PineValue>();
+
+        PineValue contructValue(
+            PrecompiledDictEntryValue entryValue)
+        {
+            if (entryValue.BlobBytesBase64 is { } bytesBase64)
+            {
+                var bytes = System.Convert.FromBase64String(bytesBase64);
+
+                return PineValue.Blob(bytes);
+            }
+
+            if (entryValue.ListItemsKeys is { } listItemsKeys)
+            {
+                var items = new PineValue[listItemsKeys.Count];
+
+                for (int i = 0; i < items.Length; ++i)
+                {
+                    items[i] = mutatedDict[listItemsKeys[i]];
+                }
+
+                return PineValue.List(items);
+            }
+
+            throw new System.NotImplementedException(
+                "Unexpected entry type: " + entryValue.GetType());
+        }
+
+        for (var i = 0; i < entries.Count; ++i)
+        {
+            var entry = entries[i];
+
+            mutatedDict[entry.Key] = contructValue(entry.Value);
+        }
+
+        var valuesExpectedInCompilerContainer = mutatedDict[subsetCompilerKey];
+
+        if (valuesExpectedInCompilerContainer is not PineValue.ListValue valuesExpectedInCompilerList)
+        {
+            throw new System.Exception("TODO");
+        }
+
+        var listValuesExpectedInCompiler =
+            valuesExpectedInCompilerList.Elements.OfType<PineValue.ListValue>()
+            .ToHashSet();
+
+        var blobValuesExpectedInCompiler =
+            valuesExpectedInCompilerList.Elements.OfType<PineValue.BlobValue>()
+            .ToHashSet();
+
+        /*
+        var valueLists =
+            entries.Select(entry => entry.Key).Except([subsetCompilerKey])
+            .Select(key => mutatedDict[key]);
+        */
+
+        var valueListsDict = new Dictionary<PineValue.ListValue.ListValueStruct, PineValue.ListValue>();
+
+        foreach (var item in mutatedDict)
+        {
+            if (item.Key is subsetCompilerKey)
+                continue;
+
+            if (item.Value is not PineValue.ListValue listValue)
+                continue;
+
+            valueListsDict[new PineValue.ListValue.ListValueStruct(listValue)] = listValue;
+        }
+
+        return new PineListValueReusedInstances(
+            listValuesExpectedInCompiler,
+            blobValuesExpectedInCompiler,
+            valueListsDict);
+    }
+
+
+    public record PineListValueReusedInstances(
+        IReadOnlySet<PineValue.ListValue> ValuesExpectedInCompilerLists,
+        IReadOnlySet<PineValue.BlobValue> ValuesExpectedInCompilerBlobs,
+        IReadOnlyDictionary<PineValue.ListValue.ListValueStruct, PineValue.ListValue> PineValueLists);
+
+    public static PineListValueReusedInstances BuildPineListValueReusedInstances(
+        IEnumerable<Expression> expressionRootsSource)
+    {
+        var valueRootsFromProgramsSorted =
+            expressionRootsSource
+            .Select(ExpressionEncoding.EncodeExpressionAsValue)
+            .Concat(PopularExpression.BuildPopularValueDictionary().Values)
+            .OrderBy(pineValue => pineValue is PineValue.ListValue listValue ? listValue.NodesCount : 0)
+            .ToList();
+
+        var (valuesExpectedInCompilerLists, valuesExpectedInCompilerBlobs) =
+            CollectAllComponentsFromRoots(valueRootsFromProgramsSorted);
+
+        /*
+        IReadOnlySet<ElmValue> ElmValueSource()
+        {
+            {
+                var tempEncodingDict = new Dictionary<PineValue, ElmValue>();
+
+                foreach (var valueInCompiler in valueRootsFromProgramsSorted)
+                {
+                    var encodedInCompilerElm =
+                        ElmValueInterop.PineValueEncodedAsInElmCompiler(
+                            valueInCompiler,
+                            tempEncodingDict);
+
+                    tempEncodingDict[valueInCompiler] = encodedInCompilerElm;
+                }
+
+                var sourceElmValues =
+                    tempEncodingDict.Values
+                    .Concat(PopularValues.PopularElmValuesSource());
+
+                var tempElmValueEncodingDict = new Dictionary<ElmValue, PineValue>();
+
+                foreach (var elmValue in sourceElmValues.OrderBy(ev => ev.ContainedNodesCount))
+                {
+                    tempElmValueEncodingDict[elmValue] =
+                        ElmInteractive.ElmValueEncoding.ElmValueAsPineValue(
+                            elmValue,
+                            tempElmValueEncodingDict);
+                }
+            }
+        }
+        */
+
+        IReadOnlyDictionary<PineValue.ListValue.ListValueStruct, PineValue.ListValue> PineValueLists;
+
+        {
+            var tempEncodingDict = new Dictionary<PineValue, ElmValue>();
+
+            foreach (var valueInCompiler in valueRootsFromProgramsSorted)
+            {
+                var encodedInCompilerElm =
+                    ElmValueInterop.PineValueEncodedAsInElmCompiler(
+                        valueInCompiler,
+                        tempEncodingDict);
+
+                tempEncodingDict[valueInCompiler] = encodedInCompilerElm;
+            }
+
+            var sourceElmValues =
+                tempEncodingDict.Values
+                .Concat(PopularValues.PopularElmValuesSource());
+
+            var tempElmValueEncodingDict = new Dictionary<ElmValue, PineValue>();
+
+            foreach (var elmValue in sourceElmValues.OrderBy(ev => ev.ContainedNodesCount))
+            {
+                tempElmValueEncodingDict[elmValue] =
+                    ElmInteractive.ElmValueEncoding.ElmValueAsPineValue(
+                        elmValue,
+                        tempElmValueEncodingDict);
+            }
+
+            var (allListsComponents, _) =
+                CollectAllComponentsFromRoots(
+                    valuesExpectedInCompilerLists
+                    .Concat(tempElmValueEncodingDict.Values));
+
+            var allListsComponentsSorted =
+                allListsComponents
+                .OrderBy(listValue => listValue.NodesCount)
+                .ToList();
+
+            var reusedListsDictInConstruction =
+                new Dictionary<PineValue.ListValue, PineValue.ListValue>();
+
+
+            var rebuildClock = System.Diagnostics.Stopwatch.StartNew();
+
+
+
+            foreach (var oldInstance in allListsComponentsSorted)
+            {
+                /*
+                 * Since we are iterating in order of increasing size and all components,
+                 * all the elements of the current list have already been rebuilt.
+                 * Thus, we only need to rebuild shallowly the current list.
+                 * */
+
+                var rebuiltItems = oldInstance.Elements.ToArray();
+
+                for (var i = 0; i < rebuiltItems.Length; i++)
+                {
+                    var listItem = rebuiltItems[i];
+
+                    if (listItem is not PineValue.ListValue oldItemAsList)
+                        continue;
+
+                    listItem = reusedListsDictInConstruction[oldItemAsList];
+
+                    rebuiltItems[i] = listItem;
+                }
+
+                var rebuilt =
+                    PineValue.List(rebuiltItems);
+
+                reusedListsDictInConstruction[rebuilt] = rebuilt;
+            }
+
+
+            {
+                var totalItemsCount =
+                    reusedListsDictInConstruction.Sum(l => l.Value.Elements.Count);
+
+                System.Console.WriteLine(
+                    "Rebuilt " + reusedListsDictInConstruction.Count + " lists containing " + totalItemsCount + " items in " +
+                    rebuildClock.Elapsed.TotalSeconds.ToString("#.##") + " seconds.");
+            }
+
+
+            PineValueLists =
+                reusedListsDictInConstruction
+                .ToFrozenDictionary(
+                    keySelector: asRef => new PineValue.ListValue.ListValueStruct(asRef.Key.Elements),
+                    elementSelector: asRef => asRef.Value);
+        }
+
+        return new PineListValueReusedInstances(
+            valuesExpectedInCompilerLists,
+            valuesExpectedInCompilerBlobs,
+            PineValueLists);
+    }
+
     public void Build()
     {
+        var clockOverall = System.Diagnostics.Stopwatch.StartNew();
+
+        /*
         var valueRootsFromProgramsSorted =
             expressionRootsSource
             .Select(ExpressionEncoding.EncodeExpressionAsValue)
@@ -71,6 +416,16 @@ public record ReusedInstances(
             .Concat(valuesExpectedInCompilerLists.OrderBy(listValue => listValue.NodesCount))
             .ToList();
 
+
+        {
+            System.Console.WriteLine(
+                "Loaded and sorted " + valuesExpectedInCompilerSorted.Count + " values (" +
+                valuesExpectedInCompilerLists.Count +
+                " lists) expected in compiler in " +
+                clockOverall.Elapsed.TotalSeconds.ToString("#.##") + " seconds.");
+        }
+
+
         {
             var tempEncodingDict = new Dictionary<PineValue, ElmValue>();
 
@@ -84,9 +439,13 @@ public record ReusedInstances(
                 tempEncodingDict[valueInCompiler] = encodedInCompilerElm;
             }
 
+            var sourceElmValues =
+                tempEncodingDict.Values
+                .Concat(PopularValues.PopularElmValuesSource());
+
             var tempElmValueEncodingDict = new Dictionary<ElmValue, PineValue>();
 
-            foreach (var elmValue in tempEncodingDict.Values.OrderBy(ev => ev.ContainedNodesCount))
+            foreach (var elmValue in sourceElmValues.OrderBy(ev => ev.ContainedNodesCount))
             {
                 tempElmValueEncodingDict[elmValue] =
                     ElmInteractive.ElmValueEncoding.ElmValueAsPineValue(
@@ -96,9 +455,8 @@ public record ReusedInstances(
 
             var (allListsComponents, _) =
                 CollectAllComponentsFromRoots(
-                    valuesExpectedInCompilerSorted
-                    .Concat(tempElmValueEncodingDict.Values)
-                    .Concat(PopularValues.PopularElmValuesSource().Select(ElmInteractive.ElmValueEncoding.ElmValueAsPineValue)));
+                    valuesExpectedInCompilerLists
+                    .Concat(tempElmValueEncodingDict.Values));
 
             var allListsComponentsSorted =
                 allListsComponents
@@ -108,28 +466,31 @@ public record ReusedInstances(
             var reusedListsDictInConstruction =
                 new Dictionary<PineValue.ListValue, PineValue.ListValue>();
 
+
+            var rebuildClock = System.Diagnostics.Stopwatch.StartNew();
+
+
+
             foreach (var oldInstance in allListsComponentsSorted)
             {
                 /*
                  * Since we are iterating in order of increasing size and all components,
                  * all the elements of the current list have already been rebuilt.
                  * Thus, we only need to rebuild shallowly the current list.
-                 * */
+                 * *
 
-                var rebuiltItems = new PineValue[oldInstance.Elements.Count];
+                var rebuiltItems = oldInstance.Elements.ToArray();
 
-                for (var i = 0; i < oldInstance.Elements.Count; i++)
+                for (var i = 0; i < rebuiltItems.Length; i++)
                 {
-                    var listItem = oldInstance.Elements[i];
+                    var listItem = rebuiltItems[i];
 
-                    var rebuiltItem =
-                        listItem is PineValue.ListValue oldItemAsList
-                        ?
-                        reusedListsDictInConstruction[oldItemAsList]
-                        :
-                        listItem;
+                    if (listItem is not PineValue.ListValue oldItemAsList)
+                        continue;
 
-                    rebuiltItems[i] = rebuiltItem;
+                    listItem = reusedListsDictInConstruction[oldItemAsList];
+
+                    rebuiltItems[i] = listItem;
                 }
 
                 var rebuilt =
@@ -138,12 +499,42 @@ public record ReusedInstances(
                 reusedListsDictInConstruction[rebuilt] = rebuilt;
             }
 
+
+            {
+                var totalItemsCount =
+                    reusedListsDictInConstruction.Sum(l => l.Value.Elements.Count);
+
+                System.Console.WriteLine(
+                    "Rebuilt " + reusedListsDictInConstruction.Count + " lists containing " + totalItemsCount + " items in " +
+                    rebuildClock.Elapsed.TotalSeconds.ToString("#.##") + " seconds.");
+            }
+
+
             ListValues =
                 reusedListsDictInConstruction
                 .ToFrozenDictionary(
                     keySelector: asRef => new PineValue.ListValue.ListValueStruct(asRef.Key.Elements),
                     elementSelector: asRef => asRef.Value);
         }
+        */
+
+
+        var pineListValues =
+            BuildPineListValueReusedInstances(expressionRootsSource);
+
+
+        ListValues = pineListValues.PineValueLists.ToFrozenDictionary();
+
+        System.Console.WriteLine(
+            "Derived " + ListValues.Count + " list values in " + clockOverall.Elapsed.TotalSeconds.ToString("#.##") + " seconds.");
+
+        var valuesExpectedInCompilerSorted =
+            PineValue.ReusedBlobs
+            .Cast<PineValue>()
+            .Concat(pineListValues.ValuesExpectedInCompilerBlobs)
+            .Concat(pineListValues.ValuesExpectedInCompilerLists.OrderBy(listValue => listValue.NodesCount))
+            .ToList();
+
 
         {
             /*
@@ -363,6 +754,11 @@ public record ReusedInstances(
                     keySelector: kvp => kvp.Value,
                     elementSelector: kvp => kvp.Key);
         }
+
+
+        System.Console.WriteLine(
+            "Completed reused instances in " + clockOverall.Elapsed.TotalSeconds.ToString("#.##") + " seconds.");
+
     }
 
     public void AssertReferenceEquality()

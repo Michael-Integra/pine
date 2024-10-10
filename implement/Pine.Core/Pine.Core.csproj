@@ -37,6 +37,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Remove="PineVM\reused-pine-value-lists.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="PineVM\reused-pine-value-lists.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="8.0.8" />
   </ItemGroup>
 

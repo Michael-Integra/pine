@@ -187,6 +187,37 @@ public class TestElmInteractive
             }
         }
 
+
+        {
+            console.WriteLine("\nDetails from " + scenariosResults.Count + " scenarios:\n");
+
+            foreach (var scenario in scenariosResults.OrderBy(kv => kv.Key.Key))
+            {
+                console.WriteLine(
+                    "\nScenario " + scenario.Key.Key + ": " + scenario.Value.StepsReports.Count + " steps:\n" +
+                    string.Join(
+                        "\n\n",
+                        scenario.Value.StepsReports.Select(step =>
+                        "Step " + step.name + ":\n" +
+                        step.result.Unpack(
+                            fromErr: err => "Failed with error:\n" + err.errorAsText,
+                            fromOk: ok =>
+                            ok switch
+                            {
+                                InteractiveScenarioTestStepSuccess.ErrorAsExpected errExpected =>
+                                "Err as expected:\n" + errExpected.ErrorAsText,
+
+                                InteractiveScenarioTestStepSuccess.SubmissionResponseOk submissionOk =>
+                                "ok with " +
+                                (submissionOk.SubmissionResponse.InspectionLog?.Count ?? 0) + " log entries:\n" +
+                                string.Join("\n", submissionOk.SubmissionResponse.InspectionLog ?? []),
+
+                                _ =>
+                                throw new NotImplementedException("Unexpected result type: " + ok.GetType().FullName)
+                            }))));
+            }
+        }
+
         return
             scenariosResults
             .ToImmutableDictionary(
